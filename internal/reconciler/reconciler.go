@@ -335,6 +335,15 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Info("ingress deleting; removing finalizer post-recompute")
 		controllerutil.RemoveFinalizer(&ing, FinalizerName)
 		if err := r.Update(ctx, &ing); err != nil {
+			// Cache-lag race: a previous reconcile already removed the
+			// finalizer server-side and the API server has since deleted the
+			// Ingress. Our informer cache hadn't caught up, so r.Get above
+			// returned the stale "finalizer still present" copy. The desired
+			// end state — Ingress gone — is already true; treat as success.
+			if apierrors.IsNotFound(err) {
+				log.V(1).Info("ingress already removed by an earlier reconcile; skipping finalizer update")
+				return ctrl.Result{}, nil
+			}
 			return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
 		}
 		// TODO(events): emit Normal/Deleted for the removed object.

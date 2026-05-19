@@ -20,6 +20,8 @@ import (
 	apiclient "github.com/ingressive-cloud/controller/internal/api"
 	"github.com/ingressive-cloud/controller/internal/config"
 
+	"github.com/ingressive-cloud/connector/zitihost"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -47,6 +49,11 @@ type Bootstrapper struct {
 	// reconcileInterval.
 	Interval time.Duration
 
+	// Enroll exchanges a Ziti enrollment JWT for identity.json bytes. Defaults
+	// to zitihost.Enroll, which calls the real Ziti controller. Tests inject a
+	// stub so they don't need a live Ziti controller to run.
+	Enroll func(jwt string) ([]byte, error)
+
 	// lastResult caches the most recent successful BootstrapResult. Read via
 	// LastResult.
 	lastResult *BootstrapResult
@@ -59,6 +66,7 @@ func New(api *apiclient.Client, cfg *config.Config, kc ctrlclient.Client) *Boots
 		Cfg:    cfg,
 		Client: kc,
 		Logger: slog.Default(),
+		Enroll: zitihost.Enroll,
 	}
 }
 
@@ -133,12 +141,27 @@ func (b *Bootstrapper) LastResult() *BootstrapResult {
 	return b.lastResult
 }
 
-// Reconcile is one full pass: check-in with the API to discover our identity
-// and report our version, then ensure-connector against the API using the
-// returned slug, then reconcile the Secret and Deployment in-cluster.
-// Idempotent and safe to call repeatedly. Returns the result for callers that
-// need the identifiers; the result is also cached on the struct for retrieval
-// via LastResult.
+// Reconcile is one full pass: check-in with the API, ensure the K8s Secret
+// and Deployment match the controller's desired state.
+//
+// EnsureConnector — which rotates the connector's Ziti identity server-side
+// and invalidates any running connector pod — is called only when credentials
+// don't already exist locally:
+//
+//   - First-time bootstrap: no PairedConnector in the check-in response.
+//   - K8s Secret missing or missing identity.json: somebody deleted it (or it
+//     was minted by a pre-migration controller that stored only the JWT); we
+//     need to re-mint and re-enroll.
+//
+// When EnsureConnector is called the controller also runs Ziti enrollment
+// immediately, server-side: the one-time JWT is exchanged for a permanent
+// identity.json and stored in the Secret. The connector pod then mounts
+// identity.json directly and never enrolls itself, so pod restarts (OOM,
+// node drain, image bumps) are trivial — re-read the file, reconnect.
+//
+// Identity rotation is therefore explicit (delete the Secret to force it)
+// rather than ambient. Drift reconciles after the initial successful
+// bootstrap don't touch the Ziti controller at all.
 func (b *Bootstrapper) Reconcile(ctx context.Context) (*BootstrapResult, error) {
 	info, err := b.API.CheckIn(ctx)
 	if err != nil {
@@ -152,50 +175,98 @@ func (b *Bootstrapper) Reconcile(ctx context.Context) (*BootstrapResult, error) 
 		"controller_status", info.Controller.Status,
 	)
 
-	creds, err := b.API.EnsureConnector(ctx, info.Controller.Slug)
-	if err != nil {
-		return nil, fmt.Errorf("ensure connector on server: %w", err)
-	}
-	if creds.ConnectorSlug == "" {
-		return nil, errors.New("server returned empty connector slug")
-	}
-
 	// Owner reference lets us tie connector resources back to the controller's
 	// own Deployment, so a `kubectl delete deploy ingressive-controller` also
 	// cleans up the connector. Best-effort: silently skip if we can't resolve.
 	owner := b.resolveOwnerReference(ctx)
 
-	secret := desiredSecret(
-		b.Cfg.Namespace,
-		creds.ConnectorSlug,
-		b.Cfg.APIURL,
-		instanceLabelFor(creds.ConnectorSlug),
-		connectorCreds{
-			AccessKeyID:     creds.AccessKeyID,
-			AccessKeySecret: creds.AccessKeySecret,
-			EnrollmentJWT:   creds.EnrollmentJWT,
-		},
-	)
-	if owner != nil {
-		secret.OwnerReferences = []metav1.OwnerReference{*owner}
-	}
-	if err := b.reconcileSecret(ctx, secret); err != nil {
-		return nil, fmt.Errorf("reconcile secret: %w", err)
+	// Decide whether we need to mint fresh credentials.
+	var connectorID, connectorSlug string
+	needsCredentials := info.PairedConnector == nil
+	if !needsCredentials {
+		connectorID = info.PairedConnector.ID
+		connectorSlug = info.PairedConnector.Slug
+		// Server says a paired connector exists. Verify we have its K8s Secret
+		// — including the enrolled identity.json key — in place. If the
+		// Secret is missing entirely, or was minted by a pre-migration
+		// controller that stored only the JWT, the only way to recover is to
+		// re-mint and re-enroll.
+		var existing corev1.Secret
+		err := b.Client.Get(ctx, types.NamespacedName{
+			Namespace: b.Cfg.Namespace,
+			Name:      resourceNameFor(connectorSlug),
+		}, &existing)
+		switch {
+		case kerrors.IsNotFound(err):
+			b.log().Info("K8s Secret missing; will re-mint credentials",
+				"connector_slug", connectorSlug)
+			needsCredentials = true
+		case err != nil:
+			return nil, fmt.Errorf("get connector secret: %w", err)
+		default:
+			if len(existing.Data[identitySecretKey]) == 0 {
+				b.log().Info("K8s Secret missing identity.json; will re-mint credentials",
+					"connector_slug", connectorSlug)
+				needsCredentials = true
+			}
+		}
 	}
 
-	deployment := desiredDeployment(b.Cfg.Namespace, creds.ConnectorSlug, b.Cfg.ConnectorImage, owner)
+	if needsCredentials {
+		creds, err := b.API.EnsureConnector(ctx, info.Controller.Slug)
+		if err != nil {
+			return nil, fmt.Errorf("ensure connector on server: %w", err)
+		}
+		if creds.ConnectorSlug == "" {
+			return nil, errors.New("server returned empty connector slug")
+		}
+		connectorID = creds.ConnectorID
+		connectorSlug = creds.ConnectorSlug
+
+		// Run Ziti enrollment server-side, here in the controller, so the
+		// connector binary never sees the one-time JWT. Failure here returns
+		// without writing a partial Secret — the controller will exit, K8s
+		// restarts it, and the next attempt gets a fresh JWT from the API.
+		identityJSON, err := b.Enroll(creds.EnrollmentJWT)
+		if err != nil {
+			return nil, fmt.Errorf("enroll connector identity: %w", err)
+		}
+
+		secret := desiredSecret(
+			b.Cfg.Namespace,
+			connectorSlug,
+			b.Cfg.APIURL,
+			instanceLabelFor(connectorSlug),
+			connectorCreds{
+				AccessKeyID:     creds.AccessKeyID,
+				AccessKeySecret: creds.AccessKeySecret,
+				IdentityJSON:    identityJSON,
+			},
+		)
+		if owner != nil {
+			secret.OwnerReferences = []metav1.OwnerReference{*owner}
+		}
+		if err := b.reconcileSecret(ctx, secret); err != nil {
+			return nil, fmt.Errorf("reconcile secret: %w", err)
+		}
+	} else {
+		b.log().Debug("connector credentials in place; skipping EnsureConnector",
+			"connector_slug", connectorSlug)
+	}
+
+	deployment := desiredDeployment(b.Cfg.Namespace, connectorSlug, b.Cfg.ConnectorImage, owner)
 	if err := b.reconcileDeployment(ctx, deployment); err != nil {
 		return nil, fmt.Errorf("reconcile deployment: %w", err)
 	}
 
 	b.log().Info("Connector pod reconciled",
-		"connector_slug", creds.ConnectorSlug,
+		"connector_slug", connectorSlug,
 		"namespace", b.Cfg.Namespace,
 	)
 	result := &BootstrapResult{
 		ControllerSlug: info.Controller.Slug,
-		ConnectorID:    creds.ConnectorID,
-		ConnectorSlug:  creds.ConnectorSlug,
+		ConnectorID:    connectorID,
+		ConnectorSlug:  connectorSlug,
 	}
 	b.lastResult = result
 	return result, nil
@@ -216,7 +287,7 @@ func (b *Bootstrapper) reconcileSecret(ctx context.Context, want *corev1.Secret)
 		return nil
 	}
 	got.StringData = want.StringData
-	got.Data = nil // force StringData to take effect on update
+	got.Data = want.Data
 	got.Labels = want.Labels
 	got.Type = want.Type
 	if len(want.OwnerReferences) > 0 {

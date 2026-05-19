@@ -27,9 +27,31 @@ func resourceNameFor(connectorSlug string) string {
 	return "ingressive-connector-" + connectorSlug
 }
 
-// desiredSecret renders the K8s Secret containing the connector's credentials.
-// The Bifrost API rotates these on every EnsureConnector call, so the
-// controller writes a fresh Secret each time it bootstraps.
+// identitySecretKey is the key under which the enrolled Ziti identity.json
+// bytes live in the connector Secret. The Deployment mounts this key as a
+// file at identityMountPath; the connector reads the file on startup.
+const identitySecretKey = "identity.json"
+
+// identityMountDir is the directory inside the connector container where the
+// Secret's identity.json key is mounted. The Deployment sets
+// INGRESSIVE_IDENTITY_DIR to this path so the connector binary reads
+// <dir>/identity.json. We use a dedicated path (rather than overlaying
+// /etc/ingressive) so the volume mount doesn't clobber anything else the
+// container image ships in /etc/ingressive — and so the file mount stays
+// read-only without needing subPath gymnastics.
+const identityMountDir = "/var/run/ingressive"
+
+// identityVolumeName is the name we give the projected Secret volume that
+// exposes identity.json to the connector container.
+const identityVolumeName = "ingressive-identity"
+
+// desiredSecret renders the K8s Secret containing the connector's credentials
+// and enrolled Ziti identity. The Bifrost API rotates the access key on every
+// EnsureConnector call; the controller calls EnsureConnector at most once per
+// identity (the resulting identity.json is durable) so this Secret is in
+// practice written once and updated only on credential rotation triggered by
+// Secret deletion. Scalar env vars live in StringData; the identity.json
+// bytes go into Data so the file mount sees the raw JSON unchanged.
 func desiredSecret(namespace, connectorSlug, apiURL, instanceLabel string, creds connectorCreds) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -42,15 +64,32 @@ func desiredSecret(namespace, connectorSlug, apiURL, instanceLabel string, creds
 			"INGRESSIVE_API_URL":        apiURL,
 			"INGRESSIVE_API_KEY_ID":     creds.AccessKeyID,
 			"INGRESSIVE_API_KEY_SECRET": creds.AccessKeySecret,
-			"ENROLLMENT_JWT":            creds.EnrollmentJWT,
 			"INGRESSIVE_INSTANCE_LABEL": instanceLabel,
+		},
+		Data: map[string][]byte{
+			identitySecretKey: creds.IdentityJSON,
 		},
 	}
 }
 
-// desiredDeployment renders the connector Deployment. We use envFrom so the
-// container picks up the full Secret as environment variables — that way
-// rotating the Secret only requires a pod restart, not a Deployment update.
+// desiredDeployment renders the connector Deployment.
+//
+// The Secret is consumed two ways:
+//   - envFrom: scalar credentials (API URL, key id/secret, instance label) are
+//     exposed as environment variables. The connector binary reads these via
+//     os.Getenv. Rotating these values only requires a pod restart, not a
+//     Deployment update.
+//   - volume mount: the Secret's identity.json key is projected as a file at
+//     /var/run/ingressive/identity.json. INGRESSIVE_IDENTITY_DIR points the
+//     connector binary at that directory. Mounting via a dedicated path
+//     (rather than overlaying /etc/ingressive) keeps the volume read-only
+//     without subPath tricks and avoids clobbering anything the image ships
+//     in /etc/ingressive.
+//
+// Note: a Secret volume projects every key in the Secret as a file under the
+// mount directory. The scalar env-var keys would appear as files there too,
+// which is harmless — the connector only reads identity.json from this
+// directory and ignores anything else.
 func desiredDeployment(namespace, connectorSlug, image string, owner *metav1.OwnerReference) *appsv1.Deployment {
 	labels := labelsFor(connectorSlug)
 	replicas := int32(1)
@@ -75,6 +114,18 @@ func desiredDeployment(namespace, connectorSlug, image string, owner *metav1.Own
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{{
+						Name: identityVolumeName,
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: secretName,
+								Items: []corev1.KeyToPath{{
+									Key:  identitySecretKey,
+									Path: identitySecretKey,
+								}},
+							},
+						},
+					}},
 					Containers: []corev1.Container{{
 						Name:  "connector",
 						Image: image,
@@ -83,15 +134,27 @@ func desiredDeployment(namespace, connectorSlug, image string, owner *metav1.Own
 								LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
 							},
 						}},
-						// POD_NAME doubles as the connector's instance label, so each
-						// replica's identity in the console is its pod name.
-						Env: []corev1.EnvVar{{
-							Name: "INGRESSIVE_INSTANCE_LABEL",
-							ValueFrom: &corev1.EnvVarSource{
-								FieldRef: &corev1.ObjectFieldSelector{
-									FieldPath: "metadata.name",
+						Env: []corev1.EnvVar{
+							// POD_NAME doubles as the connector's instance label, so each
+							// replica's identity in the console is its pod name.
+							{
+								Name: "INGRESSIVE_INSTANCE_LABEL",
+								ValueFrom: &corev1.EnvVarSource{
+									FieldRef: &corev1.ObjectFieldSelector{
+										FieldPath: "metadata.name",
+									},
 								},
 							},
+							// Point the connector at the Secret-projected identity.json.
+							{
+								Name:  "INGRESSIVE_IDENTITY_DIR",
+								Value: identityMountDir,
+							},
+						},
+						VolumeMounts: []corev1.VolumeMount{{
+							Name:      identityVolumeName,
+							MountPath: identityMountDir,
+							ReadOnly:  true,
 						}},
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
@@ -115,54 +178,51 @@ func desiredDeployment(namespace, connectorSlug, image string, owner *metav1.Own
 }
 
 // connectorCreds is the bootstrap package's internal mirror of the API
-// client's ConnectorCredentials struct. We carry our own copy so kube.go has
+// client's ConnectorCredentials struct, plus the enrolled identity bytes the
+// controller produces in Reconcile. We carry our own copy so kube.go has
 // no dependency on internal/api (and importantly to keep the import graph
 // flowing in the right direction for the future API-client extraction).
+//
+// IdentityJSON is the JSON config bytes returned by zitihost.Enroll — the
+// permanent Ziti identity, not the one-time JWT. Persisting these into the
+// K8s Secret means pod restarts can mount the same identity rather than
+// re-enrolling.
 type connectorCreds struct {
 	AccessKeyID     string
 	AccessKeySecret string
-	EnrollmentJWT   string
+	IdentityJSON    []byte
 }
 
-// secretsEqual reports whether the relevant fields of two Secrets match. We
-// compare just StringData + the labels we set; ignore server-managed fields
-// like resourceVersion or unrelated annotations the operator may have added.
+// secretsEqual reports whether the relevant fields of two Secrets match.
+// Equality is checked on the union of StringData (scalar env vars) and Data
+// (binary keys like identity.json) — when a Secret is read back from the
+// API server its StringData is empty and every value lives in Data
+// (base64-decoded by the client). We normalize both to a single map[string]
+// []byte before comparing. Labels are also compared; server-managed fields
+// like resourceVersion and unrelated annotations are ignored.
 func secretsEqual(a, b *corev1.Secret) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	if !mapEqualString(a.StringData, b.StringData) {
+	if !mapEqualBytes(mergeSecretData(a), mergeSecretData(b)) {
 		return false
-	}
-	// StringData is one-way: when read back from the API server it's empty and
-	// the values appear in Data (base64-decoded). Compare both directions.
-	if !stringMatchesData(a.StringData, b.Data) && !stringMatchesData(b.StringData, a.Data) {
-		// If both have only Data (round-tripped) we compare those.
-		if a.StringData == nil && b.StringData == nil {
-			if !mapEqualBytes(a.Data, b.Data) {
-				return false
-			}
-		}
 	}
 	return mapEqualString(a.Labels, b.Labels)
 }
 
-// stringMatchesData compares a string map (desired) against a base64-decoded
-// byte map (observed). Used to recognize a no-op reconcile when the server
-// returns Data even though we sent StringData.
-func stringMatchesData(want map[string]string, got map[string][]byte) bool {
-	if len(want) == 0 && len(got) == 0 {
-		return true
+// mergeSecretData returns a unified view of a Secret's key/value contents,
+// folding StringData (string values) and Data (byte values) into one map so
+// the equality check doesn't have to reason about both shapes. StringData
+// wins on duplicate keys, matching the API server's own resolution rule.
+func mergeSecretData(s *corev1.Secret) map[string][]byte {
+	out := make(map[string][]byte, len(s.Data)+len(s.StringData))
+	for k, v := range s.Data {
+		out[k] = v
 	}
-	if len(want) != len(got) {
-		return false
+	for k, v := range s.StringData {
+		out[k] = []byte(v)
 	}
-	for k, v := range want {
-		if string(got[k]) != v {
-			return false
-		}
-	}
-	return true
+	return out
 }
 
 func mapEqualString(a, b map[string]string) bool {
@@ -227,5 +287,45 @@ func deploymentNeedsUpdate(got, want *appsv1.Deployment) (bool, string) {
 			return true, "envFrom secret name differs"
 		}
 	}
+	// Detect the migration from "JWT in env" to "identity.json mounted as a
+	// file": volume + volumeMount + INGRESSIVE_IDENTITY_DIR env all need to be
+	// present. If a pre-migration Deployment is still running, this triggers
+	// the rollout that picks them up.
+	if !hasIdentityVolume(got.Spec.Template.Spec.Volumes) {
+		return true, "identity volume missing"
+	}
+	if !hasIdentityVolumeMount(gotC.VolumeMounts) {
+		return true, "identity volumeMount missing"
+	}
+	if !hasIdentityDirEnv(gotC.Env) {
+		return true, "INGRESSIVE_IDENTITY_DIR env missing"
+	}
 	return false, ""
+}
+
+func hasIdentityVolume(vols []corev1.Volume) bool {
+	for _, v := range vols {
+		if v.Name == identityVolumeName && v.Secret != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func hasIdentityVolumeMount(mounts []corev1.VolumeMount) bool {
+	for _, m := range mounts {
+		if m.Name == identityVolumeName && m.MountPath == identityMountDir {
+			return true
+		}
+	}
+	return false
+}
+
+func hasIdentityDirEnv(env []corev1.EnvVar) bool {
+	for _, e := range env {
+		if e.Name == "INGRESSIVE_IDENTITY_DIR" && e.Value == identityMountDir {
+			return true
+		}
+	}
+	return false
 }
