@@ -1,0 +1,51 @@
+{
+  "shop.example.com": {
+    "locations": [
+      {
+        "type": "prefix",
+        "path": "/api",
+        "upstream": {
+          "connector_id": "cn-fixture-uuid",
+          "service": "http://api.shop.svc.cluster.local:8080"
+        },
+        "response_headers": {
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-Content-Type-Options": "nosniff",
+          "X-XSS-Protection": "1; mode=block",
+          "Referrer-Policy": "strict-origin-when-cross-origin",
+          "Strict-Transport-Security": "max-age=31536000"
+        }
+      },
+      {
+        "type": "exact",
+        "path": "/health",
+        "upstream": {
+          "connector_id": "cn-fixture-uuid",
+          "service": "http://api.shop.svc.cluster.local:8080"
+        },
+        "response_headers": {
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-Content-Type-Options": "nosniff",
+          "X-XSS-Protection": "1; mode=block",
+          "Referrer-Policy": "strict-origin-when-cross-origin",
+          "Strict-Transport-Security": "max-age=31536000"
+        }
+      },
+      {
+        "type": "prefix",
+        "path": "/assets",
+        "upstream": {
+          "connector_id": "cn-fixture-uuid",
+          "service": "http://cdn.shop.svc.cluster.local:80"
+        },
+        "response_headers": {
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-Content-Type-Options": "nosniff",
+          "X-XSS-Protection": "1; mode=block",
+          "Referrer-Policy": "strict-origin-when-cross-origin",
+          "Strict-Transport-Security": "max-age=31536000"
+        }
+      }
+    ]
+  }
+}

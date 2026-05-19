@@ -1,0 +1,14 @@
+{{- if .Values.ingressClass.create }}
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: {{ .Values.ingressClass.name }}
+  labels:
+    {{- include "ingressive-controller.labels" . | nindent 4 }}
+  annotations:
+    # Mark as default IngressClass when no other is set on an Ingress.
+    # Drop this annotation if you don't want Ingressive to be the cluster default.
+    ingressclass.kubernetes.io/is-default-class: "false"
+spec:
+  controller: {{ .Values.ingressClass.controller | quote }}
+{{- end }}

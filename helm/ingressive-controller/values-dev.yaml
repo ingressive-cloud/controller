@@ -1,0 +1,28 @@
+# Dev overrides for local kind / minikube testing.
+#
+# Usage:
+#   docker build --build-arg VERSION=dev -t ingressive-controller:dev .
+#   kind load docker-image ingressive-controller:dev --name <cluster>
+#
+#   docker build -t ingressive-connector:dev /path/to/ingressive/connector
+#   kind load docker-image ingressive-connector:dev --name <cluster>
+#
+#   helm install ingressive-controller ./helm/ingressive-controller \
+#     -n ingressive-system \
+#     -f ./helm/ingressive-controller/values-dev.yaml
+#
+# The pullPolicy=Never line is the critical bit: without it, kind tries to
+# resolve unprefixed image names against docker.io/library/ and pull-fails
+# even when the image is loaded into the cluster.
+
+image:
+  repository: ingressive-controller
+  tag: dev
+  pullPolicy: Never
+
+connectorImage:
+  repository: ingressive-connector
+  tag: dev
+
+api:
+  url: http://host.docker.internal:8088

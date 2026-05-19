@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: many-paths
+  namespace: shop
+spec:
+  ingressClassName: ingressive
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8080
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8080
+          - path: /assets
+            pathType: Prefix
+            backend:
+              service:
+                name: cdn
+                port:
+                  number: 80

@@ -1,0 +1,28 @@
+{{- /*
+  Cluster-scoped permissions needed for Ingress reconciliation. The controller
+  watches Ingresses, IngressClasses, and Services cluster-wide; it patches
+  Ingress spec/status to add the finalizer and write loadBalancer.ingress.
+
+  The namespace-scoped Role (rbac.yaml) still owns Secret + Deployment +
+  Pod/ReplicaSet access in the install namespace — those are scoped to where
+  the paired connector is deployed.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "ingressive-controller.fullname" . }}-cluster
+  labels:
+    {{- include "ingressive-controller.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses/status"]
+    verbs: ["update", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingressclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]

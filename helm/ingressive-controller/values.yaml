@@ -1,0 +1,54 @@
+# Default values for ingressive-controller.
+
+image:
+  repository: ghcr.io/ingressive-cloud/controller
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# api.url is the Bifrost API root the controller talks to.
+# api.secretName is the name of a Secret in the install namespace that holds
+# the controller's API credentials. Create it before installing the chart:
+#
+#   kubectl create secret generic ingressive-controller-credentials \
+#     --from-literal=INGRESSIVE_API_KEY_ID=BFAK... \
+#     --from-literal=INGRESSIVE_API_KEY_SECRET=...
+api:
+  url: https://console.ingressive.cloud
+  secretName: ingressive-controller-credentials
+
+# The image used for the paired-connector Deployment that the controller
+# creates in the same namespace.
+connectorImage:
+  repository: ghcr.io/ingressive-cloud/connector
+  tag: latest
+
+# IngressClass resource. Customers put `spec.ingressClassName: <name>` on their
+# Ingress objects to route them through Ingressive.
+#
+#   create:     install the IngressClass resource alongside the controller.
+#               Disable if your cluster already manages IngressClass objects
+#               externally (e.g. cluster-wide GitOps).
+#   name:       the IngressClass name (the value users set on their Ingresses).
+#   controller: the controller identifier the binary watches for. Don't change
+#               this unless you're running multiple Ingressive controllers and
+#               need them to address distinct IngressClasses.
+ingressClass:
+  create: true
+  name: ingressive
+  controller: ingressive.cloud/controller
+
+# Resource requests/limits for the CONTROLLER pod (not the connector).
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Optional: pull a registry credential.
+imagePullSecrets: []
+
+# Optional: extra labels/annotations on the controller pod.
+podLabels: {}
+podAnnotations: {}

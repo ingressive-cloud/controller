@@ -1,0 +1,14 @@
+apiVersion: v2
+name: ingressive-controller
+description: Ingressive Kubernetes Ingress Controller
+type: application
+# Chart version follows the Helm chart, not the controller binary.
+version: 0.1.0
+# appVersion is the controller binary version this chart was published against.
+appVersion: "0.1.0"
+keywords:
+  - ingress
+  - ingressive
+home: https://ingressive.cloud
+sources:
+  - https://github.com/ingressive-cloud/controller

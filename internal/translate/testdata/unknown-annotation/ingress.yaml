@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: unknown-ann
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/whatever: yes
+    other.io/keep-me: ok
+spec:
+  ingressClassName: ingressive
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80

@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: two-hosts
+  namespace: default
+spec:
+  ingressClassName: ingressive
+  rules:
+    - host: a.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: a
+                port:
+                  number: 80
+    - host: b.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: b
+                port:
+                  number: 8080

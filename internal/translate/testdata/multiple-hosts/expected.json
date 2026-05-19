@@ -1,0 +1,40 @@
+{
+  "a.example.com": {
+    "locations": [
+      {
+        "type": "prefix",
+        "path": "/",
+        "upstream": {
+          "connector_id": "cn-fixture-uuid",
+          "service": "http://a.default.svc.cluster.local:80"
+        },
+        "response_headers": {
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-Content-Type-Options": "nosniff",
+          "X-XSS-Protection": "1; mode=block",
+          "Referrer-Policy": "strict-origin-when-cross-origin",
+          "Strict-Transport-Security": "max-age=31536000"
+        }
+      }
+    ]
+  },
+  "b.example.com": {
+    "locations": [
+      {
+        "type": "prefix",
+        "path": "/",
+        "upstream": {
+          "connector_id": "cn-fixture-uuid",
+          "service": "http://b.default.svc.cluster.local:8080"
+        },
+        "response_headers": {
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-Content-Type-Options": "nosniff",
+          "X-XSS-Protection": "1; mode=block",
+          "Referrer-Policy": "strict-origin-when-cross-origin",
+          "Strict-Transport-Security": "max-age=31536000"
+        }
+      }
+    ]
+  }
+}

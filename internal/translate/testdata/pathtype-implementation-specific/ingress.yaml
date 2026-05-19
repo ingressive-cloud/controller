@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: impl-specific
+  namespace: default
+spec:
+  ingressClassName: ingressive
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /something
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80

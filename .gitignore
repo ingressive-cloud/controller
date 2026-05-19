@@ -1,0 +1,20 @@
+# Compiled binaries
+/controller
+/controller.exe
+
+# Go test/coverage output
+*.test
+*.out
+coverage.html
+
+# Helm packaging artifacts
+*.tgz
+
+# IDE / OS detritus
+.idea/
+.vscode/
+.DS_Store
+
+# Build / dist directories
+/dist/
+/bin/

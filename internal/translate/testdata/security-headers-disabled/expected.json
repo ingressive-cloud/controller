@@ -1,0 +1,14 @@
+{
+  "insecure.example.com": {
+    "locations": [
+      {
+        "type": "prefix",
+        "path": "/",
+        "upstream": {
+          "connector_id": "cn-fixture-uuid",
+          "service": "http://api.default.svc.cluster.local:8080"
+        }
+      }
+    ]
+  }
+}

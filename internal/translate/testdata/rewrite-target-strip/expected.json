@@ -1,0 +1,22 @@
+{
+  "app.example.com": {
+    "locations": [
+      {
+        "type": "prefix",
+        "path": "/legacy",
+        "upstream": {
+          "connector_id": "cn-fixture-uuid",
+          "service": "http://api.default.svc.cluster.local:80"
+        },
+        "rewrite_mode": "strip_prefix",
+        "response_headers": {
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-Content-Type-Options": "nosniff",
+          "X-XSS-Protection": "1; mode=block",
+          "Referrer-Policy": "strict-origin-when-cross-origin",
+          "Strict-Transport-Security": "max-age=31536000"
+        }
+      }
+    ]
+  }
+}
