@@ -2,7 +2,10 @@
 
 image:
   repository: ghcr.io/ingressive-cloud/controller
-  tag: latest
+  # tag defaults to the chart's appVersion (set by CI to match the release tag),
+  # so each chart version pins a specific image. Override here to track latest
+  # or pin to an older controller release independent of chart version.
+  tag: ""
   pullPolicy: IfNotPresent
 
 # api.url is the Bifrost API root the controller talks to.
@@ -17,7 +20,9 @@ api:
   secretName: ingressive-controller-credentials
 
 # The image used for the paired-connector Deployment that the controller
-# creates in the same namespace.
+# creates in the same namespace. The connector ships on its own release
+# cadence, so this defaults to :latest rather than tracking the chart's
+# appVersion. Override to pin to a specific connector version.
 connectorImage:
   repository: ghcr.io/ingressive-cloud/connector
   tag: latest

@@ -129,6 +129,12 @@ func desiredDeployment(namespace, connectorSlug, image string, owner *metav1.Own
 					Containers: []corev1.Container{{
 						Name:  "connector",
 						Image: image,
+						// Always pull because the connector image is typically
+						// :latest (released on its own cadence, independent of
+						// the controller). With IfNotPresent kubelet would keep
+						// using a cached layer indefinitely; Always makes a pod
+						// restart suffice to pick up a newer connector release.
+						ImagePullPolicy: corev1.PullAlways,
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{
 								LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
@@ -265,6 +271,9 @@ func deploymentNeedsUpdate(got, want *appsv1.Deployment) (bool, string) {
 	gotC := got.Spec.Template.Spec.Containers[0]
 	if gotC.Image != wantC.Image {
 		return true, fmt.Sprintf("image %q != %q", gotC.Image, wantC.Image)
+	}
+	if gotC.ImagePullPolicy != wantC.ImagePullPolicy {
+		return true, fmt.Sprintf("imagePullPolicy %q != %q", gotC.ImagePullPolicy, wantC.ImagePullPolicy)
 	}
 	if (got.Spec.Replicas == nil) != (want.Spec.Replicas == nil) {
 		return true, "replica nil-ness differs"
